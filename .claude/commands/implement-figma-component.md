@@ -32,15 +32,17 @@ This skill enforces the correct order: **check what exists → fetch everything 
 
 Read these files before doing anything else:
 
-**Decisions:**
-- `knowledgebase/decisions/001-two-tier-token-architecture.md`
-- `knowledgebase/decisions/002-color-scale-as-theme-extension.md`
-
 **Foundations:**
 - `knowledgebase/foundations/color.md`
 - `knowledgebase/foundations/typography.md`
 - `knowledgebase/foundations/spacing.md`
 - `knowledgebase/foundations/quality.md`
+
+> **Decisions (`knowledgebase/decisions/`)** are NOT loaded here. They protect
+> architectural decisions (why ColorScale is a ThemeExtension, why tokens alias
+> rather than hardcode) and belong in token-change or code-review flows — not
+> in component implementation. Load them only if a task involves modifying the
+> token architecture itself.
 
 **Current token state (know what exists before mapping):**
 - `packages/tokens/lib/src/typography_scale.dart`
