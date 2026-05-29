@@ -7,12 +7,14 @@ Invoked as: `/implement-figma-component <figma-url>`
 
 ## Why this skill exists
 
-Without a strict procedure, three failure modes recur:
-1. **Missed text styles** — raw numbers are extracted and `TextStyle(...)` is assembled inline instead of using `TypographyScale.*` statics.
-2. **Missed variable bindings** — design values are treated as magic numbers instead of being traced back to their Figma token → Dart token.
-3. **Premature coding** — the widget is written before a full token-mapping table exists, so gaps and wrong tokens are discovered only after the fact.
+Without a strict procedure, these failure modes recur:
+1. **Rebuilding what exists** — a DS component is written from scratch when an existing widget already covers it.
+2. **Missed text styles** — raw numbers extracted and `TextStyle(...)` assembled inline instead of `TypographyScale.*` statics.
+3. **Missed variable bindings** — design values treated as magic numbers instead of traced to Figma token → Dart token.
+4. **Premature coding** — widget written before a full token-mapping table exists; wrong tokens discovered after the fact.
+5. **Missing quality obligations** — golden tests, accessibility, Code Connect skipped because they have no enforced phase.
 
-This skill enforces the correct order: **fetch everything → map everything → then write code**.
+This skill enforces the correct order: **check what exists → fetch everything → map everything → write → test → connect**.
 
 ---
 
@@ -24,20 +26,44 @@ This skill enforces the correct order: **fetch everything → map everything →
 
 ## Procedure
 
+---
+
 ### Phase 0 — Load context (do not skip)
 
 Read these files before doing anything else:
+
+**Decisions:**
 - `knowledgebase/decisions/001-two-tier-token-architecture.md`
 - `knowledgebase/decisions/002-color-scale-as-theme-extension.md`
+
+**Foundations:**
 - `knowledgebase/foundations/color.md`
 - `knowledgebase/foundations/typography.md`
 - `knowledgebase/foundations/spacing.md`
 - `knowledgebase/foundations/quality.md`
 
-Also read the current state of:
-- `packages/tokens/lib/src/typography_scale.dart` — to know which `TextStyle` statics exist
-- `packages/tokens/lib/src/color_scale.dart` — to know which color tokens exist
-- `packages/tokens/lib/src/spacing_scale.dart` — to know which spacing tokens exist
+**Current token state (know what exists before mapping):**
+- `packages/tokens/lib/src/typography_scale.dart`
+- `packages/tokens/lib/src/color_scale.dart`
+- `packages/tokens/lib/src/spacing_scale.dart`
+- `packages/tokens/lib/src/radius_tokens.dart`
+- `packages/tokens/lib/src/opacity_tokens.dart`
+- `packages/tokens/lib/src/button_tokens.dart`
+
+---
+
+### Phase 0.5 — DS reuse check (do not skip)
+
+Before touching Figma, read the current DS exports:
+- `packages/ds/lib/scapia_ds.dart`
+- `packages/ds/lib/src/components/` (scan all existing component files)
+
+Answer these questions explicitly:
+1. Does any existing DS widget already implement this component, or a close variant?
+2. Does the design use sub-components (buttons, chips, icons, inputs) that already exist as DS widgets and should be **consumed**, not rebuilt?
+3. Does any existing component share layout structure or token usage that should be extracted into a shared primitive?
+
+**If reuse is possible → propose it to the user and wait for confirmation before proceeding.**
 
 ---
 
@@ -60,7 +86,7 @@ If new styles appear in Figma that don't yet have a Dart static, **stop and add 
 
 ### Phase 2 — Fetch variables
 
-Call `figma_get_variables` (figma-console MCP) or `figma_browse_tokens` to get all variables in the current file.
+Call `figma_get_variables` (figma-console MCP) or `figma_browse_tokens`.
 
 Build a variable → Dart token lookup:
 
@@ -70,7 +96,29 @@ Build a variable → Dart token lookup:
 | `Color Semantics/Surface/Background/Primary` | `colors.backgroundPrimary` |
 | `Containers/Spacing/13` | `SpacingScale.spaceMdLg` |
 | `Containers/Radius/20` | `RadiusTokens.r20` |
+| `Containers/Opacity/40` | `OpacityTokens.opacity40` |
 | … | … |
+
+---
+
+### Phase 2.5 — Extract Figma component properties
+
+Call `mcp__figma__get_context_for_code_connect` with the node URL.
+
+For every component property returned, record:
+
+| Figma property name | Type | Options | Maps to Dart param |
+|---|---|---|---|
+| e.g. `Variant` | VARIANT | `primary / dark / ghost` | `enum DsXVariant` |
+| e.g. `Show discount` | BOOLEAN | true / false | `bool showDiscount` |
+| e.g. `Label` | TEXT | — | `String label` |
+
+These properties **directly drive the Dart widget constructor**:
+- `VARIANT` → Dart `enum` parameter
+- `BOOLEAN` → nullable `bool` or `VoidCallback?` parameter
+- `TEXT` → `String` parameter with the default value from Figma
+
+If the component has no properties, note it and continue.
 
 ---
 
@@ -82,22 +130,56 @@ For each node in the result, extract and record:
 
 #### Text nodes
 For every `TEXT` node:
-- `characters` — the actual text content (use as `String` param default)
-- `textStyleId` / `textStyle.name` — the Figma style name (must be in Phase 1 table)
-- `fills[].boundVariables.color` — the color variable (must be in Phase 2 table)
+- `characters` — actual text content (use as `String` param default)
+- `textStyleId` / `textStyle.name` — Figma style name (must be in Phase 1 table)
+- `fills[].boundVariables.color` — color variable (must be in Phase 2 table)
 
 ❌ **Never** read `fontSize`, `fontWeight`, or `lineHeightPx` from node data to assemble a `TextStyle`. Always use the named style from Phase 1.
 
 #### Frame / container nodes
 For every `FRAME` or `GROUP`:
-- `paddingLeft`, `paddingRight`, `paddingTop`, `paddingBottom` — map each to `SpacingScale.*`
-- `itemSpacing` — the gap between children, map to `SpacingScale.*`
-- `cornerRadius` — map to `RadiusTokens.*`
-- `fills[].boundVariables.color` — map to `ColorScale.*`
+- `paddingLeft`, `paddingRight`, `paddingTop`, `paddingBottom` → `SpacingScale.*`
+- `itemSpacing` → `SpacingScale.*`
+- `cornerRadius` → `RadiusTokens.*`
+- `fills[].boundVariables.color` → `ColorScale.*`
+- `opacity` → `OpacityTokens.*`
+- `effects` → record any `dropShadow`, `innerShadow`, `layerBlur` (handled in Phase 3.6)
 
 #### Image nodes
-- Note dimensions (height is usually fixed, width usually fills card)
+- Note dimensions (height usually fixed, width fills container)
 - Note any overlay Stack children (blur pills, pagination, buttons)
+
+---
+
+### Phase 3.5 — Map Figma layout structure to Flutter
+
+For every auto-layout frame, record:
+
+| Figma auto-layout | Direction | Children sizing | Flutter equivalent |
+|---|---|---|---|
+| Horizontal, hug | Row | MainAxisSize.min | `Row(mainAxisSize: MainAxisSize.min)` |
+| Horizontal, fill | Row | Expanded | `Row` + `Expanded` child |
+| Vertical, hug | Column | MainAxisSize.min | `Column(mainAxisSize: MainAxisSize.min)` |
+| Wrap | Wrap | — | `Wrap(spacing: ..., runSpacing: ...)` |
+| Fixed size | — | — | `SizedBox(width: ..., height: ...)` |
+
+Build the full widget tree skeleton from this table before writing any Dart.
+
+---
+
+### Phase 3.6 — Map Figma effects
+
+For every effect found in Phase 3, record and resolve:
+
+| Effect type | Figma value | Flutter equivalent | Token |
+|---|---|---|---|
+| `layerBlur` | sigma: 8 | `ImageFilter.blur(sigmaX: 8, sigmaY: 8)` | — (no token) |
+| `backdropBlur` | sigma: 2 | `BackdropFilter` + `ImageFilter.blur` | — (no token) |
+| `dropShadow` | color, offset, blur | `BoxDecoration(boxShadow: [...])` | Gap — ask user |
+| `innerShadow` | color, offset, blur | No direct Flutter equivalent | Gap — ask user |
+| `opacity` | 0.4 | `Opacity` widget or `.withAlpha()` | `OpacityTokens.*` |
+
+**If a shadow or effect has no token mapping — stop and ask the user what to use before continuing.**
 
 ---
 
@@ -109,16 +191,16 @@ Before writing a single line of Dart, produce this table in full:
 |---|---|---|---|---|---|
 | Hotel name text style | `Text/hotel-name` | 15 / Regular / 23 | P-Medium | `TypographyScale.pMedium` | No |
 | Hotel name color | `Text/hotel-name` | `#121212` | `Color Semantics/Content/Primary` | `colors.contentPrimary` | No |
-| Card bg color | `Frame/card` | `#FFFFFF` | `Color Semantics/BG/Primary` | `colors.backgroundPrimary` | No |
+| Card bg | `Frame/card` | `#FFFFFF` | `Color Semantics/BG/Primary` | `colors.backgroundPrimary` | No |
 | Card radius | `Frame/card` | `20dp` | `Containers/Radius/20` | `RadiusTokens.r20` | No |
 | Price text | `Text/price` | 17 / SemiBold / 23 | Hd-Small | `TypographyScale.hdSmall` | No |
-| `/night` color | `Text/night` | `#8C9AAA` | *(no Tier 2 alias)* | `colors.contentSecondary` | **Yes** |
+| `/night` color | `Text/night` | `#8C9AAA` | *(no Tier 2 alias)* | **Gap — ask user** | **Yes** |
 
 #### Gap protocol
 When a gap is found:
-1. Use the closest Tier 2 token.
-2. Add a `// Gap: Figma shows #XXXXXX (tokenName); closest Tier 2 is X.` comment inline.
-3. Record it in the `knowledgebase/components/{component}.md` under a "Token gaps" section.
+1. **Stop and ask the user** what token or approach to use — do not silently fall back to the closest.
+2. Once the user decides, apply that decision and add a `// Gap: Figma shows #XXXXXX; using X per decision.` comment inline.
+3. Record it in `knowledgebase/components/{component}.md` under a "Token gaps" section.
 4. Do **not** hardcode the hex value directly.
 
 ---
@@ -132,8 +214,12 @@ Rules (enforced by `knowledgebase/foundations/quality.md`):
 - Every color → `Theme.of(context).extension<ColorScale>()!.fieldName`
 - Every spacing → `SpacingScale.*`
 - Every radius → `RadiusTokens.*`
+- Every opacity → `OpacityTokens.*`
 - No `Colors.*`, no hardcoded hex, no magic numbers
-- No assembling `TextStyle(fontSize:..., fontWeight:..., height:...)` from scratch — always start from a named static
+- No assembling `TextStyle(fontSize:..., fontWeight:..., height:...)` from scratch
+- Interactive elements must have `Semantics` labels
+- Tappable targets must be ≥ 44dp — wrap in `SizedBox` if visual is smaller
+- State must never be conveyed by color alone — pair with icon or text
 
 Component location:
 - Widget: `packages/ds/lib/src/components/{category}/{ds_name}.dart`
@@ -150,7 +236,7 @@ dart analyze packages/
 flutter test packages/tokens/
 ```
 
-Zero errors, zero warnings required before declaring done.
+Zero errors, zero warnings required before proceeding.
 
 ---
 
@@ -160,22 +246,71 @@ Create or update `knowledgebase/components/{component}.md` with:
 - API table (all constructor params)
 - Typography table: each text element → Figma style → Dart static
 - Token usage table: each visual property → Figma variable → Dart token
-- Token gaps section (if any)
+- Token gaps section (decisions made + comments)
 - Widgetbook use-cases list
+
+---
+
+### Phase 8 — Golden tests + visual verification
+
+1. Create `packages/ds/test/components/{category}/{ds_name}_test.dart`
+2. Write golden tests covering every **variant × state** combination
+3. Run:
+   ```bash
+   flutter test packages/ds/test/components/{category}/ --update-goldens
+   ```
+4. Open each generated golden PNG and **visually compare against the Figma node screenshot** from Phase 3.
+5. If layout, spacing, or color differs → fix before proceeding.
+
+Do not auto-accept goldens without visual review.
+
+---
+
+### Phase 9 — Code Connect
+
+1. Create `packages/ds/figma/{ds_name}.figma.js` using the definition format from `stays_srp_card.figma.js` as reference.
+2. Fill in `figmaNode`, `component`, `source`, `imports`, and `example` (representative Dart constructor call).
+3. Publish:
+   ```bash
+   melos run code-connect:publish
+   ```
+4. Open Figma Dev Mode and confirm the snippet renders without error.
 
 ---
 
 ## Checklist (tick every box before marking done)
 
+**Fetch phases**
+- [ ] DS reuse check completed — existing widgets checked, reuse confirmed or ruled out
 - [ ] `figma_get_text_styles` called and lookup table built
 - [ ] `figma_get_variables` called and variable→token map built
+- [ ] Figma component properties extracted and mapped to Dart constructor params
+- [ ] Auto-layout structure mapped to Flutter widget tree skeleton
+- [ ] All Figma effects (shadows, blurs, opacity) identified and resolved
+
+**Mapping**
 - [ ] Every text node has a named style (not raw numbers)
 - [ ] Every fill/stroke has a variable binding traced to a Dart token
 - [ ] Every spacing value traced to `SpacingScale.*`
 - [ ] Every radius traced to `RadiusTokens.*`
+- [ ] Every opacity traced to `OpacityTokens.*`
 - [ ] Token mapping table (Phase 4) written out before coding started
-- [ ] All gaps documented with closest-token + comment
+- [ ] All gaps raised with user and resolved — no silent fallbacks
+
+**Code**
+- [ ] No `Colors.*`, hardcoded hex, or magic numbers
+- [ ] All text styles use `TypographyScale.*` statics + `.copyWith(color: ...)`
+- [ ] All interactive elements have `Semantics` labels
+- [ ] All tappable targets ≥ 44dp
+
+**Quality**
 - [ ] `dart analyze packages/` → No issues found
 - [ ] `flutter test packages/tokens/` → All tests passed
+- [ ] Golden tests written for every variant × state
+- [ ] Goldens visually compared against Figma screenshot — not auto-accepted
+
+**Catalog & connect**
 - [ ] Widgetbook story added with Interactive + edge-case use-cases
 - [ ] `knowledgebase/components/{component}.md` created/updated
+- [ ] `packages/ds/figma/{component}.figma.js` created
+- [ ] `melos run code-connect:publish` run — snippet renders in Figma Dev Mode
