@@ -29,13 +29,23 @@ function main() {
     try {
       const def = require(path.resolve(filePath));
 
+      // Figma executes `template` in a QuickJS sandbox at render time.
+      // Must be a complete JS module using the figma.code tagged template literal.
+      // See: https://developers.figma.com/docs/code-connect/custom-parsers/
+      const escaped = def.example
+        .replace(/\\/g, '\\\\')   // backslashes first
+        .replace(/`/g, '\\`')     // backtick delimiters
+        .replace(/\$\{/g, '\\${'); // template interpolations
+
+      const template =
+        `const figma = require('figma')\n\nexport default figma.code\`${escaped}\``;
+
       docs.push({
         figmaNode:      def.figmaNode,
         component:      def.component,
         source:         def.source,
         sourceLocation: { line: 1 },
-        // `template` is the raw code string shown in Dev Mode
-        template:       def.example,
+        template,
         templateData: {
           props:    {},
           imports:  def.imports  ?? [],
